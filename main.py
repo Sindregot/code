@@ -10,7 +10,7 @@ st.set_page_config(page_title="Warframe Endo Calculator", layout="wide")
 # ------------------------------
 @st.cache_data(ttl=3600)
 def get_rivens():
-    url = "https://api.warframe.market/v1/items/riven_mods/unveiled"
+    url = "https://api.warframe.market/v1/auctions"
     try:
         response = requests.get(url, timeout=10)
         data = response.json()
