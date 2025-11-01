@@ -1,36 +1,61 @@
 import streamlit as st
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
+import json
 import time
 
-st.set_page_config(page_title="Warframe Endo Tracker", layout="wide")
+st.set_page_config(page_title="Warframe Riven Endo Tracker", layout="wide")
+
 
 # ------------------------------
 # Helper functions
 # ------------------------------
-@st.cache_data(ttl=3600)
-def get_auctions():
-    url = "https://api.warframe.market/v1/auctions/search?type=riven&positive_stats=ammo_maximum&sort_by=price_asc"
+def fetch_riven_auctions():
+    url = "https://warframe.market/auctions/riven_mods"
+    response = requests.get(url)
+    html = response.text
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Extract JSON from the script containing 'window.__NUXT__'
+    scripts = soup.find_all("script")
+    json_text = None
+    for script in scripts:
+        if "window.__NUXT__" in script.text:
+            start = script.text.find("{")
+            end = script.text.rfind("}") + 1
+            json_text = script.text[start:end]
+            break
+
+    if not json_text:
+        st.error("⚠️ Could not find Riven auction data on the page.")
+        return []
+
+    data = json.loads(json_text)
+
+    # Find Riven auctions in the JSON (may vary depending on site structure)
+    auctions = []
     try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        auctions = data.get("payload", {}).get("auctions", [])
-        if not auctions:
-            st.warning("⚠️ No auctions currently available.")
-        return auctions, int(time.time())
-    except Exception as e:
-        st.error(f"⚠️ Failed to fetch auction data: {e}")
-        return [], int(time.time())
+        all_auctions = data["state"]["auctions"]
+        for a in all_auctions:
+            if a["item"]["item_type"] == "RIVEN":
+                auctions.append(a)
+    except KeyError:
+        st.error("⚠️ Unexpected JSON structure. Unable to parse auctions.")
+
+    return auctions
+
 
 def calculate_riven_endo(mastery_rank, mod_rank, rerolls):
     return 100 * (mastery_rank - 8) + 22.5 * (2 ** mod_rank) + 200 * rerolls
 
-# ------------------------------
-# App UI
-# ------------------------------
-st.title("💠 Warframe Riven Endo Tracker")
 
-# Sidebar inputs for simulation
+# ------------------------------
+# Streamlit UI
+# ------------------------------
+st.title("💠 Warframe Riven Endo Tracker (Web Scraping)")
+
+# Sidebar inputs for Riven simulation
 st.sidebar.header("Riven Endo Calculator")
 mastery_rank_input = st.sidebar.number_input("Mastery Rank", 8, 30, 8)
 mod_rank_input = st.sidebar.number_input("Riven Mod Rank", 0, 8, 8)
@@ -39,72 +64,66 @@ endo_yield_input = calculate_riven_endo(mastery_rank_input, mod_rank_input, rero
 st.sidebar.metric("Estimated Endo Yield", f"{endo_yield_input:,.0f}")
 
 # ------------------------------
-# Fetch auction data
+# Fetch Riven auctions
 # ------------------------------
-with st.spinner("Fetching latest auction data..."):
-    auctions, last_fetched = get_auctions()
+with st.spinner("Fetching Riven auctions from Warframe Market..."):
+    riven_auctions = fetch_riven_auctions()
+    last_fetched = int(time.time())
 
-current_time = int(time.time())
-if current_time - last_fetched > 3600:
-    st.warning("⚠️ New API data may be available. Click below to refresh.")
-    if st.button("🔄 Refresh Now"):
-        st.cache_data.clear()
-        st.rerun()
+if not riven_auctions:
+    st.warning("No Riven auctions found.")
 else:
-    st.success("✅ Data is up to date (within the last hour).")
+    st.success(f"✅ {len(riven_auctions)} Riven auctions fetched.")
 
 # ------------------------------
-# Process Riven auctions
+# Process auctions into DataFrame
 # ------------------------------
 riven_data = []
-for a in auctions:
-    item = a.get("item", {})
-    if not item or item.get("item_type") != "RIVEN":
-        continue
-
-    item_name = item.get("name", "Unknown")
-    mod_rank = item.get("mod_rank", 0)
-    mastery_rank = item.get("mastery_level", 8)
-    rerolls = item.get("re_rolls", 0)
+for a in riven_auctions:
+    item = a["item"]
     price = a.get("buyout_price", 0)
-    auction_id = a.get("id", "")
-    user_status = a.get("owner", {}).get("status", "offline")
-
+    mastery_rank = item.get("mastery_level", 8)
+    mod_rank = item.get("mod_rank", 0)
+    rerolls = item.get("re_rolls", 0)
     endo = calculate_riven_endo(mastery_rank, mod_rank, rerolls)
     efficiency = endo / price if price > 0 else 0
+    auction_id = a.get("id", "")
+    status = a.get("owner", {}).get("status", "offline")
     url = f"https://warframe.market/auction/{auction_id}"
 
     riven_data.append({
-        "Item": item_name,
+        "Item": item.get("name", "Unknown"),
         "Mastery Rank": mastery_rank,
         "Mod Rank": mod_rank,
         "Rerolls": rerolls,
         "Price (p)": int(price),
         "Endo": int(endo),
         "Efficiency": efficiency,
-        "Status": user_status,
+        "Status": status,
         "Link": url
     })
+
+# Convert to DataFrame
+df = pd.DataFrame(riven_data)
+df.sort_values(by="Efficiency", ascending=False, inplace=True)
 
 # ------------------------------
 # Display table
 # ------------------------------
-if not riven_data:
-    st.warning("No Riven auctions found.")
-else:
-    df = pd.DataFrame(riven_data)
-    df.sort_values(by="Efficiency", ascending=False, inplace=True)
+st.subheader("Riven Auctions")
+st.dataframe(df[["Item", "Mastery Rank", "Mod Rank", "Rerolls", "Price (p)", "Endo", "Efficiency", "Status"]],
+             use_container_width=True)
 
-    st.subheader("Riven Auctions")
-    st.dataframe(df[["Item", "Mastery Rank", "Mod Rank", "Rerolls", "Price (p)", "Endo", "Efficiency", "Status"]], use_container_width=True)
+# ------------------------------
+# Copy-link buttons
+# ------------------------------
+st.write("Copy auction links:")
+for i, row in df.iterrows():
+    st.button(
+        f"Copy link for {row['Item']}",
+        key=f"link_{i}",
+        on_click=st.experimental_set_clipboard,
+        args=(row["Link"],)
+    )
 
-    st.write("Links to Warframe Market listings (click to copy):")
-    for i, row in df.iterrows():
-        st.button(
-            f"Copy link for {row['Item']}",
-            key=f"link_{i}",
-            on_click=st.experimental_set_clipboard,
-            args=(row["Link"],)
-        )
-
-st.caption("Data from Warframe Market API. Updated hourly.")
+st.caption("Data scraped from Warframe Market. Updated live on page refresh.")
