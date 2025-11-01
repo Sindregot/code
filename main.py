@@ -10,7 +10,7 @@ st.set_page_config(page_title="Warframe Endo Tracker", layout="wide")
 # ------------------------------
 @st.cache_data(ttl=3600)
 def get_auctions():
-    url = "https://api.warframe.market/v2/versions"
+    url = "https://api.warframe.market/v2"
     try:
         response = requests.get(url, timeout=10)
         data = response.json()
